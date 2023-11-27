@@ -1,0 +1,73 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subir Imagen</title>
+    <!-- Bootstrap CSS CDN -->
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <!-- Opcional: Bootstrap Bundle con Popper.js -->
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.bundle.min.js"></script>
+    <!-- jQuery CDN - Necesario para el envío de AJAX y Bootstrap JavaScript -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+</head>
+<body>
+    <div class="container mt-5">
+        <h2>Subir Imagen</h2>
+        <form id="image-upload-form" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="tenant_id">Tenant ID:</label>
+                <input type="text" class="form-control" id="tenant_id" name="tenant_id" required>
+            </div>
+            <div class="form-group">
+                <label for="email">Email:</label>
+                <input type="email" class="form-control" id="email" name="email" required>
+            </div>
+            <div class="form-group">
+                <label for="image">Seleccione la imagen:</label>
+                <input type="file" class="form-control-file" id="image" name="image" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Subir Imagen</button>
+        </form>
+    </div>
+
+    <script>
+        $(document).ready(function() {
+            $('#image-upload-form').on('submit', function(e) {
+                e.preventDefault();
+                var tenant_id = $('#tenant_id').val();
+                var email = $('#email').val();
+                var file = $('#image')[0].files[0];
+        
+                // Lee el archivo seleccionado y lo codifica en base64
+                var reader = new FileReader();
+                reader.onloadend = function() {
+                    // Crea un objeto JSON con los datos codificados en base64 y los demás campos
+                    var base64data = reader.result.split(',')[1]; // Elimina el prefijo del resultado del FileReader
+                    var data = {
+                        tenant_id: tenant_id,
+                        email: email,
+                        image: base64data
+                    };
+        
+                    // Envía los datos codificados a tu API
+                    $.ajax({
+                        type: 'POST',
+                        url: 'https://qm62veanu5.execute-api.us-east-1.amazonaws.com/dev/guardar-imagen', // Reemplaza con tu URL del endpoint de GuardarImagen
+                        data: JSON.stringify(data), // Convierte el objeto de datos a una cadena JSON
+                        contentType: 'application/json', // Asegúrate de enviar la cabecera de contenido como JSON
+                        success: function(response) {
+                            alert('Imagen subida con éxito');
+                        },
+                        error: function(error) {
+                            alert('Error al subir la imagen');
+                        }
+                    });
+                };
+                reader.readAsDataURL(file); // Comienza la lectura del archivo y la codificación
+            });
+        });
+    </script>
+</body>
+</html>

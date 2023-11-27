@@ -1,0 +1,102 @@
+  service: mi-app-saas
+
+  provider:
+    name: aws
+    runtime: python3.8
+    stage: dev
+    region: us-east-1
+    environment:
+      DYNAMODB_TABLE: t_produccion_diaria
+      IMAGES_BUCKET: esulca-bucket-imagenes
+      SNS_TOPIC_ARN:
+        Ref: SnsTopic
+    # iamRoleStatements ha sido removido ya que estamos utilizando labrole para todas las funciones
+
+  functions:
+    GuardarImagen:
+      handler: GuardarImagen.handler
+      role: arn:aws:iam::907275769507:role/LabRole  # Reemplazar con el ARN correcto de labrole
+      events:
+        - http:
+            path: guardar-imagen
+            method: post
+            cors: true
+      environment:
+        SQS_EXTRAER_TABLAS_URL:
+          Ref: SQSExtraerTablas
+
+    ExtraerTablas:
+      handler: ExtraerTablas.handler
+      role: arn:aws:iam::907275769507:role/LabRole  # Reemplazar con el ARN correcto de labrole
+      environment:
+        SNS_TEXTRACT_TOPIC_ARN:
+          Ref: SnsTopic
+
+    GuardarEnDB:
+      handler: GuardarEnDB.handler
+      role: arn:aws:iam::907275769507:role/LabRole  # Reemplazar con el ARN correcto de labrole
+      events:
+        - sqs:
+            arn:
+              Fn::GetAtt:
+                - SQSGuardarEnDB
+                - Arn
+
+    EnviarCorreoNotificacion:
+      handler: EnviarCorreoNotificacion.handler
+      role: arn:aws:iam::907275769507:role/LabRole  # Reemplazar con el ARN correcto de labrole
+      events:
+        - stream:
+            type: dynamodb
+            arn:
+              Fn::GetAtt:
+                - DynamoDBTable
+                - StreamArn
+            batchSize: 1
+            startingPosition: LATEST
+
+  resources:
+    Resources:
+      SQSExtraerTablas:
+        Type: "AWS::SQS::Queue"
+        Properties:
+          QueueName: "SQSExtraerTablas"
+
+      SQSGuardarEnDB:
+        Type: "AWS::SQS::Queue"
+        Properties:
+          QueueName: "SQSGuardarEnDB"
+
+      # La definición de TextractServiceRole se ha eliminado ya que estamos utilizando labrole
+
+      SnsTopic:
+        Type: 'AWS::SNS::Topic'
+        Properties:
+          TopicName: 'SNSGuardarImagen'
+
+      DynamoDBTable:
+        Type: "AWS::DynamoDB::Table"
+        Properties:
+          TableName: ${self:provider.environment.DYNAMODB_TABLE}
+          AttributeDefinitions:
+            - AttributeName: id
+              AttributeType: S
+          KeySchema:
+            - AttributeName: id
+              KeyType: HASH
+          StreamSpecification:
+            StreamViewType: NEW_IMAGE
+          BillingMode: PAY_PER_REQUEST
+
+      ImagesS3Bucket:
+        Type: 'AWS::S3::Bucket'
+        Properties:
+          BucketName: esulca-bucket-imagenes
+
+      StaticWebS3Bucket:
+        Type: 'AWS::S3::Bucket'
+        Properties:
+          BucketName: esulca-bucket-web
+          WebsiteConfiguration:
+            IndexDocument: 'index.html'
+            ErrorDocument: 'error.html' 
