@@ -2,20 +2,25 @@
 import boto3
 import json
 import os
-
-# Cliente de Textract y DynamoDB para invocar el análisis de documentos y guardar datos.
 textract_client = boto3.client('textract')
 dynamodb_client = boto3.client('dynamodb')
 
 def handler(event, context):
-    # Procesar cada mensaje de la cola SQS.
+    # Fecha actual para la clave de ordenación
+
     for record in event['Records']:
         message_body = json.loads(record['body'])
-        file_name = message_body['s3_key']
-        tenant_id = message_body['tenant_id']
-        email = message_body['email']
-
-        # Invocar a Textract para procesar la imagen.
+        sns_message = json.loads(message_body['Message'])
+        file_name = sns_message['file_name']
+        tenant_id = sns_message['tenant_id']
+        email = sns_message['email']
+        print("Mensaje recibido de SNS:", sns_message)  # Imprimir el mensaje para depuración
+        fecha = sns_message.get('fecha')
+        if fecha is None:
+            print("Error: El mensaje no contiene 'fecha'.", sns_message)
+            continue  # S
+        
+        # Iniciar el análisis del documento con Textract.
         response = textract_client.start_document_analysis(
             DocumentLocation={
                 'S3Object': {
@@ -26,27 +31,36 @@ def handler(event, context):
             FeatureTypes=['TABLES'],
             NotificationChannel={
                 'RoleArn': os.environ['TEXTRACT_ROLE_ARN'],
-                'SNSTopicArn': os.environ['SNS_TOPIC_ARN']
+                'SNSTopicArn': os.environ['TEXTRACT_SNS_TOPIC_ARN']
             }
         )
 
-        # Guardar el jobId, tenant_id y email en DynamoDB.
+        print("Respuesta de Textract:", response)  # Imprimir la respuesta para depuración
+        job_id = response['JobId']
+        
+        # Guardar la relación job_id con tenant_id y fecha
         dynamodb_client.put_item(
-            TableName=os.environ['DYNAMODB_TABLE'],
+            TableName=os.environ['DYNAMODB_TABLE_RELACION'],
             Item={
-                'jobId': {'S': response['JobId']},
+                'job_id': {'S': job_id},
                 'tenant_id': {'S': tenant_id},
+                'fecha': {'S': fecha}
+            }
+        )
+        
+        # Guardar la información relevante en DynamoDB.
+        dynamodb_client.put_item(
+            TableName=os.environ['DYNAMODB_TABLE_REGISTROS'],  # Asegúrate de que esta es la tabla correcta
+            Item={
+                'tenant_id': {'S': tenant_id},  # Clave de partición
+                'fecha': {'S': fecha},  # Usar la fecha del mensaje                'jobId': {'S': response['JobId']},
                 'email': {'S': email},
                 'file_name': {'S': file_name},
-                'status': {'S': 'PROCESSING'}  # Agregar un estado para el seguimiento.
+                'status': {'S': 'PROCESSING'}
             }
         )
-
-        # Devolver una respuesta para indicar que el proceso ha comenzado.
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'message': 'Inicio del análisis de Textract solicitado',
-                'jobId': response['JobId']
-            })
-        }
+        
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'message': 'Proceso de Textract iniciado'})
+    }

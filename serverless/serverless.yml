@@ -1,102 +1,199 @@
-  service: mi-app-saas
+service: mi-app-saas
 
-  provider:
-    name: aws
-    runtime: python3.8
-    stage: dev
-    region: us-east-1
+provider:
+  name: aws
+  runtime: python3.8
+  stage: dev
+  region: us-east-1
+  environment:
+    DYNAMODB_TABLE_REGISTROS: t_registros_diarios
+    DYNAMODB_TABLE_RELACION: t_registros_relacion
+    IMAGES_BUCKET: esulca-bucket-imagenes
+    SNS_TOPIC_ARN:
+      Ref: SNSGuardarImagen
+
+functions:
+  GuardarImagen:
+    handler: GuardarImagen.handler
+    role: arn:aws:iam::907275769507:role/LabRole 
+    events:
+      - http:
+          path: guardar-imagen
+          method: post
+          cors: true
+
+  ExtraerTablas:
+    handler: ExtraerTablas.handler
+    role: arn:aws:iam::907275769507:role/LabRole
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - SQSExtraerTablas
+              - Arn
     environment:
-      DYNAMODB_TABLE: t_produccion_diaria
       IMAGES_BUCKET: esulca-bucket-imagenes
-      SNS_TOPIC_ARN:
-        Ref: SnsTopic
-    # iamRoleStatements ha sido removido ya que estamos utilizando labrole para todas las funciones
+      TEXTRACT_ROLE_ARN: arn:aws:iam::907275769507:role/LabRole
+      TEXTRACT_SNS_TOPIC_ARN:
+        Ref: SNSTextractNotification
+      SQS_GUARDAR_EN_DB_ARN: 
+        Fn::GetAtt:
+          - SQSGuardarEnDB
+          - Arn
+      DYNAMODB_TABLE_RELACION: ${self:provider.environment.DYNAMODB_TABLE_RELACION}
 
-  functions:
-    GuardarImagen:
-      handler: GuardarImagen.handler
-      role: arn:aws:iam::907275769507:role/LabRole  # Reemplazar con el ARN correcto de labrole
-      events:
-        - http:
-            path: guardar-imagen
-            method: post
-            cors: true
-      environment:
-        SQS_EXTRAER_TABLAS_URL:
-          Ref: SQSExtraerTablas
+  GuardarEnDB:
+    handler: GuardarEnDB.handler
+    role: arn:aws:iam::907275769507:role/LabRole 
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - SQSGuardarEnDB
+              - Arn
+    environment:
+      DYNAMODB_TABLE_RELACION: ${self:provider.environment.DYNAMODB_TABLE_RELACION}
+      
+  EnviarCorreoNotificacion:
+    handler: EnviarCorreoNotificacion.handler
+    role: arn:aws:iam::907275769507:role/LabRole 
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt:
+              - DynamoDBTableRegistros
+              - StreamArn
+          batchSize: 1
+          startingPosition: LATEST
 
-    ExtraerTablas:
-      handler: ExtraerTablas.handler
-      role: arn:aws:iam::907275769507:role/LabRole  # Reemplazar con el ARN correcto de labrole
-      environment:
-        SNS_TEXTRACT_TOPIC_ARN:
-          Ref: SnsTopic
+resources:
+  Resources:
+    SQSExtraerTablas:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: "SQSExtraerTablas"
+    
+    SQSExtraerTablasPolicy:
+      Type: "AWS::SQS::QueuePolicy"
+      Properties:
+        Queues:
+          - Ref: SQSExtraerTablas
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service: "sns.amazonaws.com"
+              Action: "sqs:SendMessage"
+              Resource:
+                Fn::GetAtt:
+                  - SQSExtraerTablas
+                  - Arn
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn":
+                    Ref: SNSGuardarImagen
+    
+    SQSGuardarEnDBPolicy:
+      Type: "AWS::SQS::QueuePolicy"
+      Properties:
+        Queues:
+          - Ref: SQSGuardarEnDB
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service: "sqs.amazonaws.com"
+              Action: "sqs:SendMessage"
+              Resource: 
+                Fn::GetAtt: [SQSGuardarEnDB, Arn]
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn": 
+                    Ref: SNSTextractNotification
 
-    GuardarEnDB:
-      handler: GuardarEnDB.handler
-      role: arn:aws:iam::907275769507:role/LabRole  # Reemplazar con el ARN correcto de labrole
-      events:
-        - sqs:
-            arn:
-              Fn::GetAtt:
-                - SQSGuardarEnDB
-                - Arn
+        # Definición de la cola SQS que recibe mensajes de Textract
+    SQSGuardarEnDB:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: "SQSGuardarEnDB"
 
-    EnviarCorreoNotificacion:
-      handler: EnviarCorreoNotificacion.handler
-      role: arn:aws:iam::907275769507:role/LabRole  # Reemplazar con el ARN correcto de labrole
-      events:
-        - stream:
-            type: dynamodb
-            arn:
-              Fn::GetAtt:
-                - DynamoDBTable
-                - StreamArn
-            batchSize: 1
-            startingPosition: LATEST
+    # Tema SNS que se utiliza para enviar mensajes desde GuardarImagen a SQSExtraerTablas
+    SNSGuardarImagen:
+      Type: 'AWS::SNS::Topic'
+      Properties:
+        TopicName: 'SNSGuardarImagen'
 
-  resources:
-    Resources:
-      SQSExtraerTablas:
-        Type: "AWS::SQS::Queue"
-        Properties:
-          QueueName: "SQSExtraerTablas"
+    # Suscripción de SNS a la cola SQS que permite el flujo de mensajes
+    SNSGuardarImagenSubscription:
+      Type: "AWS::SNS::Subscription"
+      Properties:
+        TopicArn:
+          Ref: SNSGuardarImagen
+        Protocol: "sqs"
+        Endpoint:
+          Fn::GetAtt: [SQSExtraerTablas, Arn]
 
-      SQSGuardarEnDB:
-        Type: "AWS::SQS::Queue"
-        Properties:
-          QueueName: "SQSGuardarEnDB"
 
-      # La definición de TextractServiceRole se ha eliminado ya que estamos utilizando labrole
+    # Nueva tabla DynamoDB para registros
+    DynamoDBTableRegistros:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_TABLE_REGISTROS}
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: fecha
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: fecha
+            KeyType: RANGE
+        StreamSpecification:
+          StreamViewType: NEW_IMAGE  # Asegúrate de que los streams estén habilitados
+        BillingMode: PAY_PER_REQUEST
 
-      SnsTopic:
-        Type: 'AWS::SNS::Topic'
-        Properties:
-          TopicName: 'SNSGuardarImagen'
+    DynamoDBTableRelacion:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_TABLE_RELACION}
+        AttributeDefinitions:
+          - AttributeName: job_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: job_id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
 
-      DynamoDBTable:
-        Type: "AWS::DynamoDB::Table"
-        Properties:
-          TableName: ${self:provider.environment.DYNAMODB_TABLE}
-          AttributeDefinitions:
-            - AttributeName: id
-              AttributeType: S
-          KeySchema:
-            - AttributeName: id
-              KeyType: HASH
-          StreamSpecification:
-            StreamViewType: NEW_IMAGE
-          BillingMode: PAY_PER_REQUEST
+    ImagesS3Bucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+        BucketName: esulca-bucket-imagenes
 
-      ImagesS3Bucket:
-        Type: 'AWS::S3::Bucket'
-        Properties:
-          BucketName: esulca-bucket-imagenes
+    StaticWebS3Bucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+        BucketName: esulca-bucket-web
+        WebsiteConfiguration:
+          IndexDocument: 'index.html'
+          ErrorDocument: 'error.html'
 
-      StaticWebS3Bucket:
-        Type: 'AWS::S3::Bucket'
-        Properties:
-          BucketName: esulca-bucket-web
-          WebsiteConfiguration:
-            IndexDocument: 'index.html'
-            ErrorDocument: 'error.html' 
+
+    # Tema SNS para notificaciones de Textract
+    SNSTextractNotification:
+      Type: 'AWS::SNS::Topic'
+      Properties:
+        TopicName: 'SNSTextractNotification'
+
+    # Suscripción de SNS a SQS para Textract
+    SNSTextractNotificationSubscription:
+      Type: "AWS::SNS::Subscription"
+      Properties:
+        TopicArn:
+          Ref: SNSTextractNotification
+        Protocol: "sqs"
+        Endpoint:
+          Fn::GetAtt: [SQSGuardarEnDB, Arn]
